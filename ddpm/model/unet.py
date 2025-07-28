@@ -8,24 +8,26 @@ from .up_and_down_sample import DownSample, UpSample
 
 
 class UNet(nn.Module):
-    def __init__(self, T, ch, ch_mult, attn, num_res_blocks, dropout):
+    def __init__(self, T, in_ch, out_ch, ch_mult, attn, num_res_blocks, dropout):
         super(UNet, self).__init__()
         assert all([i < len(ch_mult) for i in attn]), 'attn index out of bound'
-        tdim = ch * 4
-        self.time_embedding = TimeEmbedding(T, ch, tdim)
+        num_groups = out_ch
+        tdim = out_ch * 4
+        self.time_embedding = TimeEmbedding(T, out_ch, tdim)
 
         # head
-        self.head = nn.Conv2d(3, out_channels=ch, kernel_size=3, stride=1, padding=1)
+        self.head = nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=3, stride=1, padding=1)
 
         # down sample
         self.down_blocks = nn.ModuleList()
-        chs = [ch]
-        now_ch = ch
+        chs = [out_ch]
+        now_ch = out_ch
         for i, mult in enumerate(ch_mult):
-            out_ch = ch * mult
+            out_ch = out_ch * mult
             for _ in range(num_res_blocks):
                 self.down_blocks.append(
-                    ResBlock(in_ch=now_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, attn=(i in attn))
+                    ResBlock(in_ch=now_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, num_groups=num_groups,
+                             attn=(i in attn))
                 )
                 now_ch = out_ch
                 chs.append(now_ch)
@@ -36,17 +38,18 @@ class UNet(nn.Module):
 
         # middle
         self.middle_blocks = nn.ModuleList([
-            ResBlock(now_ch, now_ch, tdim=tdim, dropout=dropout, attn=True),
-            ResBlock(now_ch, now_ch, tdim=tdim, dropout=dropout, attn=False),
+            ResBlock(now_ch, now_ch, tdim=tdim, dropout=dropout, num_groups=num_groups, attn=True),
+            ResBlock(now_ch, now_ch, tdim=tdim, dropout=dropout, num_groups=num_groups, attn=False),
         ])
 
         # up sample
         self.up_blocks = nn.ModuleList()
         for i, mult in reversed(list(enumerate(ch_mult))):
-            out_ch = ch * mult
+            out_ch = out_ch * mult
             for _ in range(num_res_blocks + 1):
                 self.up_blocks.append(ResBlock(
-                    in_ch=chs.pop() + now_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, attn=(i in attn)
+                    in_ch=chs.pop() + now_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, num_groups=num_groups,
+                    attn=(i in attn)
                 ))
                 now_ch = out_ch
             if i != 0:
@@ -56,7 +59,7 @@ class UNet(nn.Module):
         self.tail = nn.Sequential(
             nn.GroupNorm(32, now_ch),
             Swish(),
-            nn.Conv2d(now_ch, 3, 3, stride=1, padding=1)
+            nn.Conv2d(in_channels=now_ch, out_channels=in_ch, kernel_size=3, stride=1, padding=1)
         )
         self.init_weights()
 
@@ -90,10 +93,33 @@ class UNet(nn.Module):
 
 
 if __name__ == '__main__':
-    batch_size = 8
-    model = UNet(
-        T=1000, ch=128, ch_mult=[1, 2, 2, 2], attn=[1],
-        num_res_blocks=2, dropout=0.1)
-    x = torch.randn(batch_size, 3, 32, 32)
-    t = torch.randint(1000, (batch_size,))
-    y = model(x, t)
+    import torchvision.transforms as transforms
+    import torchvision
+
+
+    def infiniteloop(dataloader):
+        while True:
+            for x, y in iter(dataloader):
+                yield x
+
+
+    T = 1000
+    batch_size = 32
+
+    # 下载 MNIST 数据
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+    dataset = torchvision.datasets.MNIST(root='./mnist', train=True, transform=transform, download=True)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    # Define unet
+    model = UNet(T=T, in_ch=1, out_ch=32, ch_mult=[1, 2, 2], attn=[1], num_res_blocks=2, dropout=0.1)
+    print(model)
+
+    x = next(infiniteloop(loader))
+    time = torch.randint(0, T, (batch_size,))
+    print(x.shape)
+
+    y = model(x, time)
+    print(y.shape)

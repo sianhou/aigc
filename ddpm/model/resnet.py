@@ -95,7 +95,10 @@ if __name__ == '__main__':
     resblock = ResBlock(in_ch=in_ch, out_ch=out_ch, tdim=tdim, dropout=dropout, num_groups=num_groups, attn=False)
 
     # 时间嵌入张量 (B, tdim)
-    temb = torch.randn(batch_size, tdim)  # [batch_size, tdim]
+    from time_embedding import TimeEmbedding
+
+    temb = TimeEmbedding(1000, 32, 128)(torch.randint(0, 1000, (batch_size,)))  # [batch_size, tdim]
+    print(temb.shape)
 
     # 运行 forward
     out = resblock(image, temb)

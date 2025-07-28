@@ -1,14 +1,13 @@
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class AttnBlock(nn.Module):
-    def __init__(self, in_ch, store_attn=False):
+    def __init__(self, in_ch, num_groups=32):
         super(AttnBlock, self).__init__()
-        self.store_attn = store_attn
-        self.group_norm = nn.GroupNorm(32, in_ch)
+        assert in_ch % num_groups == 0
+        self.group_norm = nn.GroupNorm(num_groups, in_ch)
         self.proj_q = nn.Conv2d(in_channels=in_ch, out_channels=in_ch, kernel_size=1, stride=1, padding=0)
         self.proj_k = nn.Conv2d(in_channels=in_ch, out_channels=in_ch, kernel_size=1, stride=1, padding=0)
         self.proj_v = nn.Conv2d(in_channels=in_ch, out_channels=in_ch, kernel_size=1, stride=1, padding=0)
@@ -20,7 +19,7 @@ class AttnBlock(nn.Module):
             nn.init.zeros_(m.bias)
         nn.init.xavier_uniform_(self.proj.weight, gain=1e-5)
 
-    def forward(self, x):
+    def forward(self, x, temb=None):
         B, C, H, W = x.shape
         h = self.group_norm(x)
 
@@ -39,9 +38,6 @@ class AttnBlock(nn.Module):
         assert list(w.shape) == [B, H * W, H * W]
         w = F.softmax(w, dim=-1)
 
-        if self.store_attn:
-            self.last_attn = w.detach()  # 可选 detach 避免反向传播
-
         # 应用注意力到 Value
         v = v.permute(0, 2, 3, 1).view(B, H * W, C)  # [B, HW, C]
         h = torch.bmm(w, v)  # [B, HW, C]
@@ -59,19 +55,5 @@ if __name__ == '__main__':
     x = torch.randn(B, C, H, W)
 
     # 应用注意力块
-    attn = AttnBlock(C, store_attn=True)
-    with torch.no_grad():
-        out = attn(x)
-
-    # 可视化注意力权重（选第一个像素作为查询）
-    w = attn.last_attn[0]  # shape: [16, 16]
-    query_idx = 0  # 第一个像素位置
-
-    plt.figure(figsize=(5, 4))
-    plt.imshow(w[query_idx].view(H, W).numpy(), cmap='viridis')
-    plt.colorbar()
-    plt.title(f'Attention Weights of Pixel {query_idx} (top-left)')
-    plt.xlabel('W')
-    plt.ylabel('H')
-    plt.tight_layout()
-    plt.show()
+    model = AttnBlock(in_ch=C, num_groups=32)
+    torch.onnx.export(model, x, "attention.onnx")
